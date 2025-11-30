@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>IIT07 Live Bus Route Simulator (OSM + Leaflet)</title>
+    
+    <!-- Tailwind CSS --><script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Leaflet CSS --><link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #101820; }
+        #map { height: 100%; border-radius: 0.5rem; }
+        
+        /* Custom Bus Icon Styling */
+        .bus-icon-container {
+            width: 40px; 
+            height: 40px;
+            /* Center the icon visually over the coordinate point */
+            transform: translate(-50%, -85%); 
+            filter: drop-shadow(0 2px 2px rgba(0,0,0,0.3)); /* Add a subtle shadow */
+        }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col">
+
+    <!-- Header --><header class="bg-[#003f5c] text-white p-4 shadow-lg">
+        <h1 class="text-2xl sm:text-3xl font-extrabold">🚌 IIT07 Bus Route Simulator (OSM)</h1>
+        <p class="text-sm sm:text-base font-light opacity-80">IIT Roorkee → Devband Express using OpenStreetMap</p>
+    </header>
+
+    <!-- Info Panel --><div class="bg-[#17202A] p-4 flex flex-wrap justify-between items-center text-white shadow-md">
+        <div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-8 text-lg font-bold">
+            <div id="lbl-next" class="text-[#00FFFF]">Next Stop: --</div>
+            <div id="lbl-eta" class="text-[#FFD700]">ETA: -- min</div>
+            <div id="lbl-speed" class="text-[#00FF00]">Speed: 80 km/h</div>
+        </div>
+
+        <div class="w-full sm:w-auto mt-4 sm:mt-0 flex items-center">
+            <label for="speed-scale" class="mr-3 text-sm">Speed (km/h):</label>
+            <input type="range" id="speed-scale" min="5" max="200" step="5" value="80" class="w-full sm:w-48 h-2 rounded-lg appearance-none cursor-pointer bg-gray-700">
+        </div>
+    </div>
+
+    <!-- Map --><main class="flex-grow p-4">
+        <div id="map" class="h-full w-full rounded-xl shadow-2xl"></div>
+    </main>
+
+    <!-- Leaflet JS --><script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script>
+        // Custom SVG for the bus icon: Modern blue bus with white windows
+        const busIconSvg = () => `
+            <div class="bus-icon-container">
+                <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+                    <!-- Bus Body with subtle gradient --><defs>
+                        <linearGradient id="busGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                            <stop offset="0%" style="stop-color:#007bff;stop-opacity:1" />
+                            <stop offset="100%" style="stop-color:#0056b3;stop-opacity:1" />
+                        </linearGradient>
+                    </defs>
+                    <rect x="5" y="10" width="30" height="15" rx="4" fill="url(#busGradient)"/>
+                    
+                    <!-- Windows (larger and clearer) --><rect x="7" y="12" width="9" height="10" rx="2" fill="white"/>
+                    <rect x="17" y="12" width="10" height="10" rx="2" fill="white"/>
+                    
+                    <!-- Wheels --><circle cx="12" cy="28" r="4" fill="#333333" stroke="#111111" stroke-width="1.5"/>
+                    <circle cx="28" cy="28" r="4" fill="#333333" stroke="#111111" stroke-width="1.5"/>
+                    
+                    <!-- IIT07 Text on the bus body --><text x="22" y="18" font-size="7" font-weight="bold" font-family="Arial" fill="#0056b3" text-anchor="middle">IIT07</text>
+                </svg>
+            </div>
+        `;
+        
+        // Leaflet custom divIcon for the bus
+        const BusIcon = L.divIcon({
+            className: 'custom-bus-marker',
+            html: busIconSvg(),
+            iconSize: [40, 40], // Adjusted size for the new SVG
+            iconAnchor: [20, 37], // Anchor at the bottom center of the bus
+        });
+
+        const STOP_DATA = [
+            { name: "IIT MGCL Library", lat: 29.86530508982337, lng: 77.8954239811844 },
+            { name: "IIT Century Gate", lat: 29.8688383982543, lng: 77.8898217472474 },
+            { name: "Roorkee Bus Stand", lat: 29.8640040070723, lng: 77.8891282008740 },
+            { name: "SDM Chauk", lat: 29.861333010391718, lng: 77.88880151443149 },
+            { name: "Cownpore Chauk", lat: 29.85631767584323, lng: 77.88809346203934 },
+            { name: "Delhi Road", lat: 29.832539108924397, lng: 77.88356921926756 },
+            { name: "APJ Chauk", lat: 29.811512199535283, lng: 77.87904377281619 },
+            { name: "Manglaur Bus Stop", lat: 29.794101805863566, lng: 77.87441371603121 },
+            { name: "Upper Ganga Bridge", lat: 29.79000737550418, lng: 77.86425519088984 },
+            { name: "Devband", lat: 29.781330831533197, lng: 77.85849598756478 }
+        ];
+
+        let busState = { distance_m: 0, speed_kmph: 80, total_route_m: 0, segment_distances: [] };
+        const speedScale = document.getElementById("speed-scale");
+        const lblNext = document.getElementById("lbl-next");
+        const lblEta = document.getElementById("lbl-eta");
+        const lblSpeed = document.getElementById("lbl-speed");
+
+        // Initialize map
+        const map = L.map('map').setView([29.835, 77.88], 12); // Centered on a middle point
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+        // Define the two polylines for covered and upcoming routes
+        let coveredRouteLine = L.polyline([], {color: '#FF0000', weight: 5}).addTo(map); // Red for covered
+        let upcomingRouteLine = L.polyline([], {color: '#00FF00', weight: 5}).addTo(map); // Green for upcoming
+        
+        // Store all original latlngs for route splitting
+        const allLatLngs = STOP_DATA.map(stop => [stop.lat, stop.lng]);
+
+
+        // Add stop markers
+        STOP_DATA.forEach((stop, i) => {
+            L.circleMarker([stop.lat, stop.lng], {radius:8, color:'#FF6F61', fillColor:'#FF6F61', fillOpacity:1}).addTo(map)
+                .bindPopup(`${i+1}. ${stop.name}`);
+        });
+
+        // Place bus marker
+        let busMarker = L.marker([STOP_DATA[0].lat, STOP_DATA[0].lng], {icon: BusIcon}).addTo(map);
+
+        // Compute segment distances (Haversine Formula)
+        function distance(lat1, lon1, lat2, lon2) {
+            const R = 6371000; // meters
+            const dLat = (lat2-lat1) * Math.PI/180;
+            const dLon = (lon2-lon1) * Math.PI/180;
+            const a = Math.sin(dLat/2) ** 2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2)**2;
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+
+        for(let i=0; i<STOP_DATA.length-1; i++){
+            const d = distance(STOP_DATA[i].lat, STOP_DATA[i].lng, STOP_DATA[i+1].lat, STOP_DATA[i+1].lng);
+            busState.segment_distances.push(d);
+            busState.total_route_m += d;
+        }
+
+        function metersToTimeMin(meters, speed_kmph){
+            return meters / (speed_kmph/3.6) / 60;
+        }
+
+        function updateInfo(currentSegment, segmentProgress, segmentLength){
+            const nextStopIndex = currentSegment+1;
+            if(nextStopIndex>=STOP_DATA.length){
+                lblNext.textContent = "Next Stop: IIT MGCL Library (Start)";
+                lblEta.textContent = "ETA: Calculating...";
+                return;
+            }
+            const remaining = segmentLength - segmentProgress;
+            let eta = remaining<100 ? "Arriving..." : `${metersToTimeMin(remaining,busState.speed_kmph).toFixed(1)} min`;
+            lblNext.textContent = `Next Stop: ${STOP_DATA[nextStopIndex].name}`;
+            lblEta.textContent = `ETA: ${eta}`;
+        }
+
+        function moveBus(){
+            let accumulated = 0;
+            let segment=0;
+            let segmentStart=0;
+            let segmentLength=busState.total_route_m;
+            let finalLatLng = [STOP_DATA[0].lat, STOP_DATA[0].lng];
+
+            // For splitting the route line
+            let coveredPath = [];
+            let upcomingPath = [];
+
+            for(let i=0;i<busState.segment_distances.length;i++){
+                const segD = busState.segment_distances[i];
+                if(busState.distance_m < accumulated + segD){
+                    segment = i;
+                    segmentStart = accumulated;
+                    segmentLength = segD;
+                    const progress = busState.distance_m - segmentStart;
+                    const fraction = progress/segmentLength;
+                    
+                    // Linear interpolation for current bus position
+                    finalLatLng = [
+                        STOP_DATA[i].lat + fraction*(STOP_DATA[i+1].lat - STOP_DATA[i].lat),
+                        STOP_DATA[i].lng + fraction*(STOP_DATA[i+1].lng - STOP_DATA[i].lng)
+                    ];
+
+                    // Build covered path
+                    for(let j=0; j<=i; j++) {
+                        coveredPath.push(allLatLngs[j]);
+                    }
+                    coveredPath.push(finalLatLng); // Add current bus position to covered path
+
+                    // Build upcoming path
+                    upcomingPath.push(finalLatLng); // Start upcoming from bus position
+                    for(let j=i+1; j<allLatLngs.length; j++) {
+                        upcomingPath.push(allLatLngs[j]);
+                    }
+
+                    break;
+                }
+                accumulated += segD;
+            }
+            // Handle case where bus is exactly at the last stop or reset
+            if (busState.distance_m >= busState.total_route_m) {
+                finalLatLng = allLatLngs[allLatLngs.length - 1];
+                coveredPath = allLatLngs;
+                upcomingPath = [allLatLngs[allLatLngs.length - 1]]; // No upcoming if at end
+            } else if (busState.distance_m === 0) {
+                finalLatLng = allLatLngs[0];
+                coveredPath = [allLatLngs[0]]; // Only start point is covered
+                upcomingPath = allLatLngs; // Entire route is upcoming
+            }
+
+
+            busMarker.setLatLng(finalLatLng);
+            coveredRouteLine.setLatLngs(coveredPath);
+            upcomingRouteLine.setLatLngs(upcomingPath);
+            updateInfo(segment, busState.distance_m-segmentStart, segmentLength);
+        }
+
+        let lastTime = performance.now();
+        function animationLoop(now){
+            const dt = (now-lastTime)/1000;
+            lastTime = now;
+            busState.distance_m += (busState.speed_kmph/3.6)*dt;
+            if(busState.distance_m >= busState.total_route_m) busState.distance_m=0; // Loop back
+            moveBus();
+            requestAnimationFrame(animationLoop);
+        }
+
+        speedScale.addEventListener("input",(e)=>{
+            busState.speed_kmph = parseFloat(e.target.value);
+            lblSpeed.textContent = `Speed: ${busState.speed_kmph} km/h`;
+        });
+
+        // Initial setup for the route lines
+        coveredRouteLine.setLatLngs([allLatLngs[0]]); // Initially just the start point is covered
+        upcomingRouteLine.setLatLngs(allLatLngs); // Entire route is upcoming
+
+        requestAnimationFrame(animationLoop);
+    </script>
+</body>
+</html>
